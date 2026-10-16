@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -27,6 +28,7 @@ type settings struct {
 	FollowMin     float64 `json:"followMin"` // the external backlight at the built-in's darkest, %
 	FollowMax     float64 `json:"followMax"` // and at its brightest
 	path          string
+	saved         []byte // what the file holds, as save writes it
 }
 
 // dataDir is where MonitorBar keeps its files.
@@ -42,17 +44,22 @@ func loadSettings() *settings {
 	s := &settings{SoftBrightness: 100, DayStart: "07:00", NightStart: "19:00", DayScene: "日间", NightScene: "夜间",
 		FollowMin: 10, FollowMax: 100,
 		path: filepath.Join(dataDir(), "settings.json")}
-	if data, err := os.ReadFile(s.path); err == nil {
-		_ = json.Unmarshal(data, s)
+	if data, err := os.ReadFile(s.path); err == nil && json.Unmarshal(data, s) == nil {
+		s.saved, _ = json.MarshalIndent(s, "", "  ")
 	}
 	return s
 }
 
+// save writes the settings when they differ from the file's: most changes
+// marked for saving, such as the dimming reapplied after a display change,
+// leave them as they were.
 func (s *settings) save() {
 	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
+	if err != nil || bytes.Equal(data, s.saved) {
 		return
 	}
 	_ = os.MkdirAll(filepath.Dir(s.path), 0o755)
-	_ = os.WriteFile(s.path, data, 0o644)
+	if os.WriteFile(s.path, data, 0o644) == nil {
+		s.saved = data
+	}
 }

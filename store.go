@@ -89,6 +89,13 @@ type store struct {
 	lastBuiltin  float64
 	followTarget float64
 	easing       bool
+	// builtin reads that brightness, each second while following and only
+	// then; after runs a function on the main thread later. Tests replace
+	// them, or leave them nil to tick by hand. followDue tells a tick is
+	// scheduled.
+	builtin   func() (float64, bool)
+	after     func(time.Duration, func())
+	followDue bool
 }
 
 // control is a picture setting the monitor offers over DDC/CI.
@@ -117,6 +124,8 @@ func newStore() *store {
 		launchAtLogin: mygo.App.OpenAtLogin(),
 		canUpdate:     mygo.Updater.Enabled(),
 		lastBuiltin:   -1,
+		builtin:       display.BuiltinBrightness,
+		after:         afterOnMain,
 	}
 	s.dayStart, s.nightStart = parseClock(s.prefs.DayStart, 7*60), parseClock(s.prefs.NightStart, 19*60)
 	s.refreshDisplay()
@@ -132,6 +141,11 @@ func (s *store) post(fn func()) {
 		fn()
 		s.redraw()
 	})
+}
+
+// afterOnMain runs fn on the main thread after d.
+func afterOnMain(d time.Duration, fn func()) {
+	time.AfterFunc(d, func() { mygo.RunOnMain(fn) })
 }
 
 // MARK: Picture (software, through the gamma table)
@@ -393,6 +407,7 @@ func readDDC(d *display.DDC, model string, all bool) ddcReading {
 }
 
 func (s *store) applyDDC(r ddcReading) {
+	defer s.follow() // the backlight may have come or gone
 	if s.ddc == nil {
 		s.hasBrightness, s.ddcVolume, s.ddcInputs, s.controls = false, false, nil, nil
 		return
@@ -554,23 +569,42 @@ func parseClock(text string, fallback int) time.Time {
 // MacBook's display to follow, and a backlight to set over DDC/CI.
 func (s *store) canFollow() bool { return s.hasBuiltin && s.hasBrightness }
 
+// follow schedules the next tick while following is on and possible, and
+// lets the ticks stop otherwise: an app that doesn't follow doesn't wake
+// every second. It is called whenever either may have changed.
+func (s *store) follow() {
+	if s.followDue || s.builtin == nil || s.after == nil || !s.prefs.FollowBuiltin || !s.canFollow() {
+		return
+	}
+	s.followDue = true
+	s.after(time.Second, func() {
+		s.followDue = false
+		if s.followTick(s.builtin) {
+			s.redraw()
+		}
+		s.follow()
+	})
+}
+
 // followTick runs every second. A change of the built-in display's
 // brightness sets a new target, which the backlight eases toward; between
-// changes, a manual change of the backlight stays.
-func (s *store) followTick(builtin func() (float64, bool)) {
+// changes, a manual change of the backlight stays. It reports a change the
+// panel shows.
+func (s *store) followTick(builtin func() (float64, bool)) (changed bool) {
 	if !s.prefs.FollowBuiltin || !s.canFollow() {
-		return
+		return false
 	}
 	b, ok := builtin()
 	if !ok {
-		return
+		return false
 	}
 	if s.lastBuiltin < 0 || math.Abs(b-s.lastBuiltin) >= 0.005 {
 		s.lastBuiltin = b
 		s.followTarget, s.easing = followTarget(b, s.prefs.FollowMin, s.prefs.FollowMax), true
+		changed = true
 	}
 	if !s.easing {
-		return
+		return changed
 	}
 	next := easeToward(s.brightness, s.followTarget)
 	if math.Round(next) != math.Round(s.brightness) {
@@ -581,11 +615,13 @@ func (s *store) followTick(builtin func() (float64, bool)) {
 	if next == s.followTarget {
 		s.easing = false
 	}
+	return true
 }
 
 // followChanged restarts following from the built-in display's brightness.
 func (s *store) followChanged() {
 	s.lastBuiltin, s.dirty = -1, true
+	s.follow()
 }
 
 // followTarget maps the built-in display's brightness, 0...1, into the
@@ -687,6 +723,7 @@ func (s *store) refreshDisplay() {
 	s.monitor = display.Target()
 	s.modes = s.monitor.Modes()
 	s.current, s.hasCurrent = s.monitor.CurrentMode()
+	s.follow() // a built-in display to follow may have come or gone
 }
 
 // displaysChanged follows plugging, mode changes and wake: the gamma table

@@ -71,8 +71,12 @@ func (a *app) ready(show bool) {
 			})
 		}
 	}()
+	// Screen time is written every few minutes: write the rest before the
+	// computer sleeps (it may not wake) and as the app quits.
+	mygo.Power.OnSuspend(a.s.tracker.Flush)
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 		a.s.save()
+		a.s.tracker.Flush()
 		display.RestoreGamma()
 		if a.s.ddc != nil {
 			a.s.ddc.Close()
@@ -82,16 +86,6 @@ func (a *app) ready(show bool) {
 
 	a.s.detect()
 	a.s.autoCheck()
-	go func() { // the built-in display's brightness, for following it
-		for range time.Tick(time.Second) {
-			mygo.RunOnMain(func() {
-				if a.s.prefs.FollowBuiltin && a.s.canFollow() {
-					a.s.followTick(display.BuiltinBrightness)
-					a.s.redraw()
-				}
-			})
-		}
-	}()
 	go func() { // a newer version: soon after launch, then every few hours
 		time.Sleep(10 * time.Second)
 		for {

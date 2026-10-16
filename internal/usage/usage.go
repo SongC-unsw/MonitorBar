@@ -18,6 +18,11 @@ const activeWithin = 2 * time.Minute
 
 const keepDays = 60
 
+// saveEvery is how many samples Record keeps before writing the file, five
+// minutes' worth rather than every sample: an idle disk, and no file for
+// Spotlight to index again every 30 seconds. Flush writes the rest.
+const saveEvery = 10
+
 type Day struct {
 	Day    string `json:"day"`    // 2006-01-02
 	Awake  int    `json:"awake"`  // seconds lit
@@ -26,9 +31,10 @@ type Day struct {
 
 // Tracker samples the monitor and stores totals in a JSON file.
 type Tracker struct {
-	path string
-	days map[string]Day
-	now  func() time.Time
+	path    string
+	days    map[string]Day
+	now     func() time.Time
+	unsaved int // samples recorded since the file was written
 }
 
 func Open(path string) *Tracker {
@@ -60,6 +66,18 @@ func (t *Tracker) Record(awake bool, idle time.Duration) {
 	for _, old := range keys[:max(0, len(keys)-keepDays)] {
 		delete(t.days, old)
 	}
+	if t.unsaved++; t.unsaved >= saveEvery {
+		t.Flush()
+	}
+}
+
+// Flush writes the samples recorded since the file was last written, as
+// the app quits or the computer sleeps.
+func (t *Tracker) Flush() {
+	if t.unsaved == 0 {
+		return
+	}
+	t.unsaved = 0
 	t.save()
 }
 

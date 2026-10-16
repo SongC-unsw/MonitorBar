@@ -17,6 +17,7 @@ func TestRecordAndRecent(t *testing.T) {
 	tr.Record(false, 0)             // asleep: ignored
 	now = now.AddDate(0, 0, -2)
 	tr.Record(true, 0)
+	tr.Flush() // as the app quits
 
 	reopened := Open(path)
 	reopened.now = func() time.Time { return time.Date(2026, 10, 14, 23, 0, 0, 0, time.Local) }
@@ -26,6 +27,32 @@ func TestRecordAndRecent(t *testing.T) {
 		if days[i] != want[i] {
 			t.Errorf("day %d = %+v, want %+v", i, days[i], want[i])
 		}
+	}
+}
+
+// Record writes the file every few samples, not at each; Flush writes the
+// rest.
+func TestSavesEveryFewSamples(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	tr := Open(path)
+	tr.now = func() time.Time { return time.Date(2026, 10, 14, 12, 0, 0, 0, time.Local) }
+	saved := func() int { return Open(path).days["2026-10-14"].Awake }
+	sample := int(Interval.Seconds())
+
+	for range saveEvery - 1 {
+		tr.Record(true, 0)
+	}
+	if got := saved(); got != 0 {
+		t.Fatalf("the file has %d s after %d samples, want nothing yet", got, saveEvery-1)
+	}
+	tr.Record(true, 0)
+	if got, want := saved(), saveEvery*sample; got != want {
+		t.Fatalf("the file has %d s after %d samples, want %d", got, saveEvery, want)
+	}
+	tr.Record(true, 0)
+	tr.Flush()
+	if got, want := saved(), (saveEvery+1)*sample; got != want {
+		t.Errorf("the file has %d s after Flush, want %d", got, want)
 	}
 }
 

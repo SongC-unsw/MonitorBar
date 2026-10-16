@@ -294,6 +294,68 @@ func TestFollowBuiltin(t *testing.T) {
 	}
 }
 
+// Following ticks each second while it is on and possible, and only then:
+// the app doesn't wake every second for nothing. A tick that changes
+// nothing doesn't redraw.
+func TestFollowTicksOnlyWhileFollowing(t *testing.T) {
+	p, _ := testPanel(t)
+	s := p.s
+	var ticks []func()
+	s.after = func(d time.Duration, fn func()) {
+		if d != time.Second {
+			t.Errorf("a tick in %v, want a second", d)
+		}
+		ticks = append(ticks, fn)
+	}
+	s.builtin = func() (float64, bool) { return 0.6, true }
+	redraws := 0
+	s.redraw = func() { redraws++ }
+	tick := func() {
+		t.Helper()
+		if len(ticks) != 1 {
+			t.Fatalf("%d ticks scheduled, want 1", len(ticks))
+		}
+		fn := ticks[0]
+		ticks = nil
+		fn()
+	}
+
+	s.hasBuiltin, s.hasBrightness, s.brightness = true, true, 30
+	s.follow()
+	if len(ticks) != 0 {
+		t.Fatal("a tick while following is off")
+	}
+	tt := newTester(p)
+	if err := tt.Click("画面"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("启用跟随内屏亮度"); err != nil {
+		t.Fatalf("no follow switch: %v in %q", err, tt.Texts())
+	}
+	for steps := 0; steps == 0 || s.easing; steps++ {
+		if steps == 30 {
+			t.Fatalf("still easing after %d ticks, at %v", steps, s.brightness)
+		}
+		tick()
+	}
+	if want := followTarget(0.6, s.prefs.FollowMin, s.prefs.FollowMax); s.brightness != want || redraws == 0 {
+		t.Fatalf("eased to %v with %d redraws, want %v", s.brightness, redraws, want)
+	}
+	drawn := redraws
+	tick() // the built-in display stays
+	if redraws != drawn {
+		t.Errorf("a tick that changed nothing redrew")
+	}
+
+	if err := tt.Click("启用跟随内屏亮度"); err != nil {
+		t.Fatal(err)
+	}
+	tick() // the one scheduled before
+	if len(ticks) != 0 {
+		t.Errorf("%d ticks scheduled after following was turned off", len(ticks))
+	}
+}
+
 // TestSnapshots writes each tab as a PNG to $MONITORBAR_SNAPSHOTS, to look at.
 func TestSnapshots(t *testing.T) {
 	dir := os.Getenv("MONITORBAR_SNAPSHOTS")
