@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"math"
 	"runtime"
 	"time"
 
@@ -16,12 +18,30 @@ import (
 // header, tabs and footer, with a margin from the screen's edge.
 const chrome = 230
 
+// The level a key of the keyboard set shows under the menu bar icon for a
+// moment, as macOS shows its own: in a pill of levelWidth by levelHeight,
+// for levelFor after the last press.
+const (
+	levelWidth  = 236
+	levelHeight = 46
+	levelFor    = 1500 * time.Millisecond
+)
+
 // app is the menu bar (notification area) icon and the panel it opens.
 type app struct {
-	s      *store
-	panel  *panel
-	tray   *mygo.Tray
-	flyout *mygo.Window // the open panel, or nil
+	s        *store
+	panel    *panel
+	tray     *mygo.Tray
+	flyout   *mygo.Window // the open panel, or nil
+	levelWin *mygo.Window // the level a key set, or nil
+	level    keyLevel
+}
+
+// keyLevel is what the level window shows.
+type keyLevel struct {
+	icon  string
+	value float64 // 0...100
+	shown int     // counts the showings: only the last one's timer closes it
 }
 
 func (a *app) ready(show bool) {
@@ -30,6 +50,10 @@ func (a *app) ready(show bool) {
 		if a.flyout != nil {
 			a.flyout.Invalidate()
 		}
+	}
+	a.s.level = func(icon string, value float64) {
+		// After the key's event is answered: a window takes a moment to make.
+		go mygo.RunOnMain(func() { a.showLevel(icon, value) })
 	}
 	a.panel = &panel{s: a.s, height: 600, maxContent: 640, onHeight: a.resize}
 
@@ -86,6 +110,7 @@ func (a *app) ready(show bool) {
 
 	a.s.detect()
 	a.s.autoCheck()
+	a.s.tapKeys(false)
 	go func() { // a newer version: soon after launch, then every few hours
 		time.Sleep(10 * time.Second)
 		for {
@@ -112,6 +137,9 @@ func (a *app) open() {
 	if a.flyout != nil {
 		return
 	}
+	if a.levelWin != nil { // the panel shows the level itself
+		a.levelWin.Close()
+	}
 	a.s.panelOpened()
 	icon := a.tray.Bounds()
 	area := mygo.Screen.DisplayNearestPoint(mygo.Point{X: icon.X + icon.Width/2, Y: icon.Y + icon.Height/2}).WorkArea
@@ -136,6 +164,51 @@ func (a *app) close() {
 	if a.flyout != nil {
 		a.flyout.Close()
 	}
+}
+
+// showLevel shows the level a key set under the menu bar icon, for a
+// moment; the panel, while open, shows it itself.
+func (a *app) showLevel(icon string, value float64) {
+	if a.flyout != nil {
+		return
+	}
+	a.level.icon, a.level.value = icon, value
+	a.level.shown++
+	if a.levelWin == nil {
+		a.levelWin = mygo.NewFlyout(mygo.FlyoutOptions{
+			Tray:      a.tray,
+			Placement: mygo.PlacementBottom,
+			Width:     levelWidth,
+			Height:    levelHeight,
+			Shadow:    true, // not Focusable: it leaves the keyboard where it is
+			Content:   ui.View(a.levelView),
+		})
+		a.levelWin.OnClosed(func() { a.levelWin = nil })
+	} else {
+		a.levelWin.Invalidate()
+	}
+	shown := a.level.shown
+	afterOnMain(levelFor, func() {
+		if a.level.shown == shown && a.levelWin != nil {
+			a.levelWin.Close()
+		}
+	})
+}
+
+// levelView is the level window: the key's icon, a meter and the value.
+func (a *app) levelView(c *ui.Context) {
+	c.SetTheme(levelTheme)
+	c.Root().Background(ui.Transparent)
+	label := "显示器音量"
+	if a.level.icon == "sun" {
+		label = "亮度"
+	}
+	ui.Row(c).Fill().PaddingX(16).Gap(10).AlignItems(ui.Center).Radius(levelHeight/2).
+		Gradient(panelTop, panelBottom, 135).Border(0.7, ui.RGBA(255, 255, 255, 0.12)).TextColor(ink).Children(func() {
+		icon(c, a.level.icon).FontSize(15).TextColor(accent).Width(18)
+		ui.Meter(c, a.level.value, 0, 100, nil).Label(label).Grow(1)
+		ui.Text(c, fmt.Sprint(int(math.Round(a.level.value)))).FontSize(13).FontWeight(600).FontFeatures("tnum").Width(26)
+	})
 }
 
 // resize fits the panel to its content, which changes with the tab.

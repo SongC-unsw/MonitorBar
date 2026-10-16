@@ -35,6 +35,7 @@ MonitorBar 只在 REDMI 显示器 G Pro 27U 2026 上测试过，不保证在你�
 - **软件调光与色温**通过显卡的 Gamma 表实现，任何连接线、任何显示器都能用。
 - **跟随内屏亮度**（MacBook + 支持 DDC/CI 的外接显示器）：内屏开启 macOS 自动亮度时，外接显示器的背光随之平滑调节，可设定外接亮度范围；手动调整会保留到内屏亮度下次变化。
 - **自动切换**：在「画面」里打开后，到了设定的白天、夜晚开始时间就自动切换到对应场景（默认 07:00「日间」、19:00「夜间」，场景可选）。只在时段交替时切换，中途的手动调整会保留到下一次交替。
+- **键盘的亮度键和音量键**（macOS）：在「⋯」菜单打开「用键盘调节亮度和音量」，再在「系统设置 › 隐私与安全性 › 辅助功能」里允许 MonitorBar，不打开面板也能调：亮度键调节外接显示器（有 DDC/CI 时调硬件背光，否则软件调光），声音从显示器输出时音量键和静音键调节显示器音量，菜单栏图标下会显示当前值；按住 Shift + Option 微调。指针在 MacBook 内屏上时的亮度键、声音从别的设备输出时的音量键仍由 macOS 处理。
 - **自动更新**：定期检查 GitHub 上的新版本，在面板底部提示，一键下载并重启；更新包经签名校验，只下载变化的部分。
 - 显示器不支持的功能不会出现在界面上。
 - 单个可执行文件，无 webview，空闲时不占 CPU；中文界面，深色主题。
@@ -71,13 +72,14 @@ MonitorBar 有三条控制显示器的通道，启动时在后台探测，哪条
 
 - **局域网遥控**：澎湃 OS 的 6095 端口提供 `getsources`（信号源列表）、`changesource2`（按编号切换，能切到 DP / USB-C）、`getvolume`、`keyevent`（遥控按键，音量 ±1）。首次启动扫描所在 /24 网段找到显示器，之后记住地址。
 - **DDC/CI**：macOS 通过 IOAVService 读写显示器的 I2C 总线（Apple Silicon）；Windows 通过系统的 Monitor Configuration API（dxva2）。输入源列表取自显示器的 MCCS 能力字符串。
-- **macOS**：通过 [purego](https://github.com/ebitengine/purego) 调用 CoreGraphics、IOKit、AppKit（无 cgo）。
+- **macOS**：通过 [purego](https://github.com/ebitengine/purego) 调用 CoreGraphics、IOKit、AppKit（无 cgo）。键盘的亮度键和音量键由 CGEventTap 接管，声音输出设备从 CoreAudio 读取。
 - **Windows**：通过 `syscall` 调用 user32、gdi32、dxva2、powrprof。
 
 ## 平台差异
 
 - **软件调光**：Windows 只接受离标准曲线不远的 Gamma（最暗约 50%），更暗时退到允许的最暗并保留色温比例，面板会提示。macOS 无此限制。退出时两端都会恢复原始曲线。
 - **跟随内屏亮度**：仅 macOS（读取 DisplayServices 的内屏亮度），且需外接显示器支持 DDC/CI 背光；Windows 暂不支持。
+- **键盘的亮度键和音量键**：仅 macOS，用事件监听接管按键，需要辅助功能权限。应用未签名，每次更新后要在辅助功能列表里把 MonitorBar 关掉再打开。
 - **亮屏统计**：macOS 读显示器休眠状态；Windows 以「空闲时长 ≥ 电源计划的关闭显示器时间」推断。
 - **面板位置**：从溢出区打开时面板贴在图标上方；拿不到图标位置时（如再次启动程序打开）贴在屏幕右下角。
 - 数据保存在 `~/Library/Application Support/MonitorBar`（macOS）或 `%APPDATA%\MonitorBar`（Windows）。
@@ -108,6 +110,7 @@ git tag v1.0.0 && git push origin v1.0.0
 | `panel.go` / `tabs.go` / `widgets.go` / `icons.go` | 界面 |
 | `internal/mitv` | 澎湃 OS 局域网接口与发现 |
 | `internal/display` | 平台层：显示器信息、分辨率、Gamma、DDC/CI、亮屏与空闲时间 |
+| `internal/mediakeys` | 键盘的亮度键和音量键（macOS 的事件监听与辅助功能权限） |
 | `internal/usage` | 屏幕时间，每 30 秒采样，保留 60 天 |
 | `internal/schedule` | 自动切换：按设定时间判断白天或夜晚 |
 
@@ -127,7 +130,7 @@ git tag v1.0.0 && git push origin v1.0.0
 
 ## English
 
-REDMI monitors do not support DDC/CI, so the usual tools (MonitorControl, BetterDisplay, Lunar) cannot switch their inputs. They run HyperOS, though, whose LAN remote API can, DP and USB-C included. MonitorBar manages an external monitor from the macOS menu bar or the Windows notification area. It switches inputs and changes volume over the LAN remote API of Xiaomi HyperOS monitors, or over DDC/CI on monitors that support it (backlight and picture controls too), dims and warms the picture through the gamma table, switches resolutions and refresh rates, and tracks screen time. It is one Go codebase built with [mygo](https://mygo.egoist.dev/), drawing native UI on both platforms; the Windows build cross-compiles from a Mac. See [Development](#开发) for build commands.
+REDMI monitors do not support DDC/CI, so the usual tools (MonitorControl, BetterDisplay, Lunar) cannot switch their inputs. They run HyperOS, though, whose LAN remote API can, DP and USB-C included. MonitorBar manages an external monitor from the macOS menu bar or the Windows notification area. It switches inputs and changes volume over the LAN remote API of Xiaomi HyperOS monitors, or over DDC/CI on monitors that support it (backlight and picture controls too), dims and warms the picture through the gamma table, switches resolutions and refresh rates, and tracks screen time. On macOS the keyboard's brightness and volume keys can adjust the monitor too. It is one Go codebase built with [mygo](https://mygo.egoist.dev/), drawing native UI on both platforms; the Windows build cross-compiles from a Mac. See [Development](#开发) for build commands.
 
 ## 许可证
 

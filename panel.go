@@ -10,6 +10,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/binaryify/MonitorBar/internal/display"
+	"github.com/binaryify/MonitorBar/internal/mediakeys"
 )
 
 type tab struct{ name, icon string }
@@ -57,6 +58,7 @@ func (p *panel) view(c *ui.Context) {
 			p.tabs(c)
 			p.content(c)
 			p.updateBar(c)
+			p.keysBar(c)
 			p.footer(c)
 		})
 	})
@@ -113,6 +115,9 @@ func (p *panel) header(c *ui.Context) {
 			}
 			if m.Item("登录时启动").Checked(s.launchAtLogin).Chosen() {
 				s.toggleLaunchAtLogin()
+			}
+			if runtime.GOOS == "darwin" && m.Item("用键盘调节亮度和音量").Checked(s.prefs.MediaKeys).Chosen() {
+				s.toggleMediaKeys()
 			}
 			if s.canUpdate && m.Item("检查更新").Chosen() {
 				s.checkUpdate(true)
@@ -218,6 +223,27 @@ func (p *panel) updateBar(c *ui.Context) {
 		b.Children(func() { ui.Text(c, "更新并重启").FontSize(11).FontWeight(500) })
 		if b.Clicked() {
 			s.installUpdate()
+		}
+	})
+}
+
+// keysBar asks for the permission the keyboard's keys need, while their
+// setting is on without it.
+func (p *panel) keysBar(c *ui.Context) {
+	if !p.s.keysDenied {
+		return
+	}
+	ui.Row(c).Gap(8).Padding(10, 12).Margin(12, 0, 0, 0).Radius(10).Background(accent.Alpha(0.12)).
+		Border(0.7, accent.Alpha(0.35)).AlignItems(ui.Center).Children(func() {
+		icon(c, "keyboard").FontSize(13).TextColor(accent)
+		ui.Column(c).Gap(2).Grow(1).Children(func() {
+			ui.Text(c, "键盘调节需要辅助功能权限").FontSize(11).FontWeight(600)
+			ui.Text(c, "在列表里打开 MonitorBar，更新后需重开").FontSize(10).TextColor(muted)
+		})
+		b := chip(c, true).Padding(4, 12)
+		b.Children(func() { ui.Text(c, "打开设置").FontSize(11).FontWeight(500) })
+		if b.Clicked() {
+			_ = mygo.Shell.OpenExternal(mediakeys.SettingsURL)
 		}
 	})
 }

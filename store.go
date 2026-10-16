@@ -14,6 +14,7 @@ import (
 	"github.com/egoist/mygo"
 
 	"github.com/binaryify/MonitorBar/internal/display"
+	"github.com/binaryify/MonitorBar/internal/mediakeys"
 	"github.com/binaryify/MonitorBar/internal/mitv"
 	"github.com/binaryify/MonitorBar/internal/schedule"
 	"github.com/binaryify/MonitorBar/internal/usage"
@@ -96,6 +97,20 @@ type store struct {
 	builtin   func() (float64, bool)
 	after     func(time.Duration, func())
 	followDue bool
+
+	// The keyboard's brightness and volume keys (macOS). tap takes them and
+	// trusted tells whether the user lets it, as mediakeys does (nil in
+	// tests, which don't take keys); the other two tell where the keys go.
+	tap              func(handle func(mediakeys.Press) bool) (stop func(), err error)
+	trusted          func(prompt bool) bool
+	pointerOnBuiltin func() bool
+	soundToDisplay   func() bool
+	untap            func()                           // lets the keys go, nil while they aren't taken
+	keysDenied       bool                             // the setting is on without the permission
+	trustUntil       time.Time                        // when to stop looking for the permission asked for
+	lookingForTrust  bool                             // a check for it is scheduled
+	unmuted          float64                          // the volume before Mute
+	level            func(icon string, value float64) // shows what a key set (the app's)
 }
 
 // control is a picture setting the monitor offers over DDC/CI.
@@ -126,6 +141,11 @@ func newStore() *store {
 		lastBuiltin:   -1,
 		builtin:       display.BuiltinBrightness,
 		after:         afterOnMain,
+
+		tap:              mediakeys.Tap,
+		trusted:          mediakeys.Trusted,
+		pointerOnBuiltin: pointerOnBuiltin,
+		soundToDisplay:   display.SoundToDisplay,
 	}
 	s.dayStart, s.nightStart = parseClock(s.prefs.DayStart, 7*60), parseClock(s.prefs.NightStart, 19*60)
 	s.refreshDisplay()
@@ -644,6 +664,139 @@ func easeToward(current, target float64) float64 {
 	return current + step
 }
 
+// MARK: Keyboard (macOS)
+
+// keyStep is how far a brightness or volume key moves the value, as the
+// panel's − and + do; a fine press, with Shift and Option, moves 1.
+const keyStep = 5
+
+// trustWait is how long the app looks for the permission to take the keys
+// after asking for it, while the user gives it in System Settings. Later,
+// opening the panel looks again.
+const trustWait = 2 * time.Minute
+
+// tapKeys takes the keyboard's brightness and volume keys while the
+// setting is on, and lets them go when it is off. Without the permission,
+// the panel says so; with prompt, macOS also asks for it, and the app
+// looks for it a while.
+func (s *store) tapKeys(prompt bool) {
+	switch {
+	case s.tap == nil:
+		return
+	case !s.prefs.MediaKeys:
+		if s.untap != nil {
+			s.untap()
+			s.untap = nil
+		}
+		s.keysDenied = false
+		return
+	case s.untap != nil:
+		return
+	}
+	stop, err := s.tap(s.key)
+	s.keysDenied = errors.Is(err, mediakeys.ErrNotTrusted)
+	switch {
+	case err == nil:
+		s.untap = stop
+	case s.keysDenied && prompt:
+		s.trusted(true)
+		s.lookForTrust()
+	case !s.keysDenied:
+		s.notice = "无法接管键盘按键：" + err.Error()
+	}
+}
+
+// lookForTrust checks every two seconds for the permission, for trustWait.
+func (s *store) lookForTrust() {
+	s.trustUntil = s.now().Add(trustWait)
+	if s.lookingForTrust || s.after == nil {
+		return
+	}
+	s.lookingForTrust = true
+	var check func()
+	check = func() {
+		switch {
+		case !s.keysDenied || !s.prefs.MediaKeys:
+		case s.trusted(false):
+			s.tapKeys(false)
+			s.redraw()
+		case s.now().Before(s.trustUntil):
+			s.after(2*time.Second, check)
+			return
+		}
+		s.lookingForTrust = false
+	}
+	s.after(2*time.Second, check)
+}
+
+func (s *store) toggleMediaKeys() {
+	s.prefs.MediaKeys, s.dirty = !s.prefs.MediaKeys, true
+	s.tapKeys(true)
+}
+
+// key takes a brightness or volume key for the monitor, and reports
+// whether it did. Brightness keys are for the display under the pointer,
+// volume keys for the device the sound goes to: macOS keeps those for its
+// own, and those the monitor has no channel for.
+func (s *store) key(p mediakeys.Press) bool {
+	step := float64(keyStep)
+	if p.Fine {
+		step = 1
+	}
+	switch p.Key {
+	case mediakeys.BrightnessUp, mediakeys.BrightnessDown:
+		if s.pointerOnBuiltin() {
+			return false
+		}
+		if p.Key == mediakeys.BrightnessDown {
+			step = -step
+		}
+		if s.hasBrightness {
+			s.setBrightness(min(max(s.brightness+step, 0), 100))
+		} else { // the range of the software dimming's slider
+			s.prefs.SoftBrightness = min(max(s.prefs.SoftBrightness+step, 20), 100)
+			s.applyGamma()
+		}
+		s.showLevel("sun", s.effectiveBrightness())
+	case mediakeys.VolumeUp, mediakeys.VolumeDown, mediakeys.Mute:
+		if !s.hasVolume || !s.soundToDisplay() {
+			return false
+		}
+		switch {
+		case p.Key == mediakeys.Mute && s.volume > 0:
+			s.unmuted = s.volume
+			s.setVolume(0)
+		case p.Key == mediakeys.Mute:
+			s.setVolume(s.unmuted)
+		case p.Key == mediakeys.VolumeDown:
+			s.setVolume(max(s.volume-step, 0))
+		default:
+			s.setVolume(min(s.volume+step, 100))
+		}
+		name := "volume"
+		if s.volume == 0 {
+			name = "mute"
+		}
+		s.showLevel(name, s.volume)
+	default:
+		return false
+	}
+	s.redraw()
+	return true
+}
+
+func (s *store) showLevel(icon string, value float64) {
+	if s.level != nil {
+		s.level(icon, value)
+	}
+}
+
+// pointerOnBuiltin tells whether the pointer is on a built-in display,
+// whose brightness keys are macOS's.
+func pointerOnBuiltin() bool {
+	return mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint()).Internal
+}
+
 // MARK: Updates
 
 // checkUpdate asks the releases for a newer version, in the background;
@@ -748,6 +901,7 @@ func (s *store) panelOpened() {
 		s.readVolume()
 	}
 	s.refreshDDC()
+	s.tapKeys(false) // the permission may have come since
 }
 
 // detect looks for every control channel again.

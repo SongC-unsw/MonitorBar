@@ -23,6 +23,9 @@ type settings struct {
 	NightScene string `json:"nightScene"`
 	AutoPeriod string `json:"autoPeriod"` // the period whose scene was applied last
 
+	// The keyboard's brightness and volume keys adjust the monitor (macOS).
+	MediaKeys bool `json:"mediaKeys"`
+
 	// Following the built-in display's brightness over DDC/CI (MacBooks).
 	FollowBuiltin bool    `json:"followBuiltin"`
 	FollowMin     float64 `json:"followMin"` // the external backlight at the built-in's darkest, %

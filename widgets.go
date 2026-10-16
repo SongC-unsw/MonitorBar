@@ -23,6 +23,12 @@ var (
 		t.Accent, t.AccentHover, t.AccentPressed = accent, accent, accentDeep
 		return &t
 	}()
+	// levelTheme fills the meter of a key's level with the accent.
+	levelTheme = func() *ui.Theme {
+		t := *darkTheme
+		t.Success = accent
+		return &t
+	}()
 )
 
 func icon(c *ui.Context, name string) ui.Element { return ui.Icon(c, icons[name]) }

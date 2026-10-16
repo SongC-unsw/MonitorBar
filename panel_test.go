@@ -1,11 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"image"
 	"image/png"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +17,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/binaryify/MonitorBar/internal/display"
+	"github.com/binaryify/MonitorBar/internal/mediakeys"
 	"github.com/binaryify/MonitorBar/internal/mitv"
 	"github.com/binaryify/MonitorBar/internal/usage"
 )
@@ -424,5 +428,155 @@ func TestNoticeGrowsPanelWithoutInput(t *testing.T) {
 	}
 	if p.height <= before {
 		t.Fatalf("height stayed %d after the notice appeared", p.height)
+	}
+}
+
+// keyTest makes the store take keys by hand, and records the levels shown.
+func keyTest(s *store) (press func(k mediakeys.Key, fine bool) bool, shown *[]string) {
+	shown = new([]string)
+	s.level = func(icon string, v float64) { *shown = append(*shown, fmt.Sprintf("%s %v", icon, v)) }
+	return func(k mediakeys.Key, fine bool) bool { return s.key(mediakeys.Press{Key: k, Fine: fine}) }, shown
+}
+
+// The brightness keys dim the monitor in software without DDC/CI, and set
+// its backlight with it, each within its range; with the pointer on a
+// built-in display, they are macOS's.
+func TestBrightnessKeys(t *testing.T) {
+	p, gamma := testPanel(t)
+	s := p.s
+	onBuiltin := false
+	s.pointerOnBuiltin = func() bool { return onBuiltin }
+	press, shown := keyTest(s)
+
+	s.prefs.SoftBrightness = 50
+	if !press(mediakeys.BrightnessUp, false) || s.prefs.SoftBrightness != 55 || gamma[0] != 0.55 {
+		t.Errorf("up from 50: software %v, gamma %v; want 55", s.prefs.SoftBrightness, *gamma)
+	}
+	if press(mediakeys.BrightnessDown, true); s.prefs.SoftBrightness != 54 {
+		t.Errorf("a fine step down: %v, want 54", s.prefs.SoftBrightness)
+	}
+	s.prefs.SoftBrightness = 22
+	if press(mediakeys.BrightnessDown, false); s.prefs.SoftBrightness != 20 {
+		t.Errorf("down from 22: %v, want the slider's least, 20", s.prefs.SoftBrightness)
+	}
+	s.hasBrightness, s.brightness = true, 98
+	if press(mediakeys.BrightnessUp, false); s.brightness != 100 || s.prefs.SoftBrightness != 20 {
+		t.Errorf("up with DDC/CI: backlight %v, software %v; want the backlight 100", s.brightness, s.prefs.SoftBrightness)
+	}
+	onBuiltin = true
+	if press(mediakeys.BrightnessDown, false) || s.brightness != 100 {
+		t.Error("a key for the built-in display changed the monitor")
+	}
+	if want := []string{"sun 55", "sun 54", "sun 20", "sun 100"}; !slices.Equal(*shown, want) {
+		t.Errorf("levels shown %q, want %q", *shown, want)
+	}
+}
+
+// The volume keys change the monitor's volume while the sound goes to it,
+// and Mute takes it to 0 and back; otherwise they are macOS's.
+func TestVolumeKeys(t *testing.T) {
+	p, _ := testPanel(t)
+	s := p.s
+	s.link = nil // the volume is DDC/CI's, which the test doesn't reach
+	toDisplay := false
+	s.soundToDisplay = func() bool { return toDisplay }
+	press, shown := keyTest(s)
+
+	if press(mediakeys.VolumeUp, false) || s.volume != 80 {
+		t.Fatal("a volume key changed the monitor while the sound goes elsewhere")
+	}
+	toDisplay = true
+	press(mediakeys.VolumeUp, false)
+	press(mediakeys.VolumeDown, true)
+	if press(mediakeys.Mute, false); s.volume != 0 {
+		t.Errorf("Mute: %v, want 0", s.volume)
+	}
+	if press(mediakeys.Mute, false); s.volume != 84 {
+		t.Errorf("Mute again: %v, want the 84 from before", s.volume)
+	}
+	s.volume = 98
+	press(mediakeys.VolumeUp, false)
+	s.hasVolume = false
+	if press(mediakeys.VolumeUp, false) {
+		t.Error("a volume key was taken without a channel to the volume")
+	}
+	if want := []string{"volume 85", "volume 84", "mute 0", "volume 84", "volume 100"}; !slices.Equal(*shown, want) {
+		t.Errorf("levels shown %q, want %q", *shown, want)
+	}
+}
+
+// Turning the keys on in the menu asks for the permission, and the panel
+// tells how to give it until it comes; then the keys are taken, until they
+// are turned off.
+func TestMediaKeysSetting(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the keys are taken on macOS only")
+	}
+	p, _ := testPanel(t)
+	s := p.s
+	trusted, prompted, stopped := false, 0, 0
+	var handle func(mediakeys.Press) bool
+	s.trusted = func(prompt bool) bool {
+		if prompt {
+			prompted++
+		}
+		return trusted
+	}
+	s.tap = func(h func(mediakeys.Press) bool) (func(), error) {
+		if !trusted {
+			return nil, mediakeys.ErrNotTrusted
+		}
+		handle = h
+		return func() { stopped++ }, nil
+	}
+	var checks []func()
+	s.after = func(d time.Duration, fn func()) { checks = append(checks, fn) }
+	s.pointerOnBuiltin = func() bool { return false }
+	const asking = "键盘调节需要辅助功能权限"
+	tt := newTester(p)
+	choose := func() {
+		t.Helper()
+		if err := tt.Click("更多"); err != nil {
+			t.Fatal(err)
+		}
+		if err := tt.ChooseMenuItem("用键盘调节亮度和音量"); err != nil {
+			t.Fatalf("%v in %q", err, tt.Menu())
+		}
+		tt.Frame()
+	}
+	if tt.HasText(asking) {
+		t.Fatal("the permission is asked for while the keys are off")
+	}
+
+	choose()
+	if !s.prefs.MediaKeys || prompted != 1 || !tt.HasText(asking) {
+		t.Fatalf("turned on without the permission: on %v, asked %d times, texts %q", s.prefs.MediaKeys, prompted, tt.Texts())
+	}
+	trusted = true // given in System Settings
+	if len(checks) != 1 {
+		t.Fatalf("%d checks for the permission scheduled, want 1", len(checks))
+	}
+	checks[0]()
+	tt.Frame()
+	if handle == nil || tt.HasText(asking) {
+		t.Fatal("the permission came, and the keys weren't taken")
+	}
+	if !handle(mediakeys.Press{Key: mediakeys.BrightnessDown}) || s.prefs.SoftBrightness != 95 {
+		t.Errorf("brightness down: %v, want 95", s.prefs.SoftBrightness)
+	}
+
+	choose()
+	if s.prefs.MediaKeys || stopped != 1 {
+		t.Errorf("turned off: on %v, the keys let go %d times, want once", s.prefs.MediaKeys, stopped)
+	}
+}
+
+// The level window shows the key's icon, a meter and the value.
+func TestLevelView(t *testing.T) {
+	a := &app{level: keyLevel{icon: "sun", value: 55}}
+	tt := ui.NewTester(a.levelView, levelWidth, levelHeight)
+	tt.Frame()
+	if !tt.HasText("55") {
+		t.Errorf("no value in %q", tt.Texts())
 	}
 }
