@@ -81,8 +81,12 @@ type store struct {
 	// onAdjust shows the HUD for a level a key just set.
 	onAdjust func(hudKind)
 	// The media keys: taken where the user asked and macOS allows.
-	soundToDisplay  func() bool // whether the sound goes to the display, fixed in tests
-	mediaKeysDenied bool        // asked for, without the Accessibility permission
+	soundToDisplay   func() bool // whether the sound goes to the display, fixed in tests
+	pointerOnBuiltin func() bool // whether brightness keys belong to the built-in display
+	mediaKeys        *mediaKeyTap
+	mediaKeysDenied  bool // asked for, without the Accessibility permission
+	trustUntil       time.Time
+	lookingForTrust  bool // a permission check is scheduled
 
 	notice string
 	dirty  bool // prefs changed since the last save
@@ -118,6 +122,11 @@ type store struct {
 	lastBuiltin  float64
 	followTarget float64
 	easing       bool
+	// Only schedule one-second samples while following is on and possible.
+	// Tests replace these functions, or leave them nil to tick by hand.
+	builtin   func() (float64, bool)
+	after     func(time.Duration, func())
+	followDue bool
 }
 
 // control is a picture setting the monitor offers over DDC/CI.
@@ -140,17 +149,21 @@ var controlCatalog = []struct {
 
 func newStore() *store {
 	s := &store{
-		prefs:          loadSettings(),
-		tracker:        usage.Open(filepath.Join(dataDir(), "usage.json")),
-		redraw:         func() {},
-		now:            time.Now,
-		launchAtLogin:  mygo.App.OpenAtLogin(),
-		canUpdate:      mygo.Updater.Enabled(),
-		lastBuiltin:    -1,
-		registered:     map[string]string{},
-		soundToDisplay: display.SoundToDisplay,
-		keyHeld:        keystate.Held,
-		onAdjust:       func(hudKind) {},
+		prefs:            loadSettings(),
+		tracker:          usage.Open(filepath.Join(dataDir(), "usage.json")),
+		redraw:           func() {},
+		now:              time.Now,
+		launchAtLogin:    mygo.App.OpenAtLogin(),
+		canUpdate:        mygo.Updater.Enabled(),
+		lastBuiltin:      -1,
+		registered:       map[string]string{},
+		soundToDisplay:   display.SoundToDisplay,
+		pointerOnBuiltin: pointerOnBuiltin,
+		mediaKeys:        systemMediaKeys(),
+		keyHeld:          keystate.Held,
+		onAdjust:         func(hudKind) {},
+		builtin:          display.BuiltinBrightness,
+		after:            afterOnMain,
 	}
 	s.dayStart, s.nightStart = parseClock(s.prefs.DayStart, 7*60), parseClock(s.prefs.NightStart, 19*60)
 	s.refreshDisplay()
@@ -166,6 +179,11 @@ func (s *store) post(fn func()) {
 		fn()
 		s.redraw()
 	})
+}
+
+// afterOnMain runs fn on the main thread after d.
+func afterOnMain(d time.Duration, fn func()) {
+	time.AfterFunc(d, func() { mygo.RunOnMain(fn) })
 }
 
 // MARK: Picture (software, through the gamma table)
@@ -502,6 +520,7 @@ func readDDC(d *display.DDC, model string, all bool) ddcReading {
 }
 
 func (s *store) applyDDC(r ddcReading) {
+	defer s.follow() // the backlight may have come or gone
 	if s.ddc == nil {
 		s.hasBrightness, s.ddcVolume, s.ddcInputs, s.controls = false, false, nil, nil
 		return
@@ -659,23 +678,39 @@ func parseClock(text string, fallback int) time.Time {
 // MacBook's display to follow, and a backlight to set over DDC/CI.
 func (s *store) canFollow() bool { return s.hasBuiltin && s.hasBrightness }
 
-// followTick runs every second. A change of the built-in display's
-// brightness sets a new target, which the backlight eases toward; between
-// changes, a manual change of the backlight stays.
-func (s *store) followTick(builtin func() (float64, bool)) {
-	if !s.prefs.FollowBuiltin || !s.canFollow() {
+// follow schedules a tick only while following is enabled and available.
+// Call it whenever the setting or the connected displays change.
+func (s *store) follow() {
+	if s.followDue || s.builtin == nil || s.after == nil || !s.prefs.FollowBuiltin || !s.canFollow() {
 		return
+	}
+	s.followDue = true
+	s.after(time.Second, func() {
+		s.followDue = false
+		if s.followTick(s.builtin) {
+			s.redraw()
+		}
+		s.follow()
+	})
+}
+
+// followTick samples the built-in brightness and eases the backlight toward
+// it. Between changes a manual adjustment stays. It reports whether the
+// panel changed, so an unchanged sample doesn't ask for another frame.
+func (s *store) followTick(builtin func() (float64, bool)) bool {
+	if !s.prefs.FollowBuiltin || !s.canFollow() {
+		return false
 	}
 	b, ok := builtin()
 	if !ok {
-		return
+		return false
 	}
 	if s.lastBuiltin < 0 || math.Abs(b-s.lastBuiltin) >= 0.005 {
 		s.lastBuiltin = b
 		s.followTarget, s.easing = followTarget(b, s.prefs.FollowMin, s.prefs.FollowMax), true
 	}
 	if !s.easing {
-		return
+		return false
 	}
 	if s.prefs.SoftBrightness < 100 { // following sets the backlight alone, with no software dimming
 		s.prefs.SoftBrightness = 100
@@ -690,11 +725,13 @@ func (s *store) followTick(builtin func() (float64, bool)) {
 	if next == s.followTarget {
 		s.easing = false
 	}
+	return true
 }
 
 // followChanged restarts following from the built-in display's brightness.
 func (s *store) followChanged() {
 	s.lastBuiltin, s.dirty = -1, true
+	s.follow()
 }
 
 // followTarget maps the built-in display's brightness, 0...1, into the
@@ -828,6 +865,7 @@ func (s *store) refreshDisplay() {
 	s.monitor = display.Target()
 	s.modes = s.monitor.Modes()
 	s.current, s.hasCurrent = s.monitor.CurrentMode()
+	s.follow()
 }
 
 // displaysChanged follows plugging, mode changes and wake: the gamma table
@@ -835,6 +873,7 @@ func (s *store) refreshDisplay() {
 func (s *store) displaysChanged() {
 	previous := s.monitor
 	s.refreshDisplay()
+	s.syncMediaKeys() // permission may have changed while the computer slept
 	display.ResetGammaBase()
 	s.applyGamma()
 	if s.monitor != previous {
@@ -852,6 +891,7 @@ func (s *store) panelOpened() {
 		s.readVolume()
 	}
 	s.refreshDDC()
+	s.syncMediaKeys()
 }
 
 // detect looks for every control channel again.
@@ -864,6 +904,9 @@ func (s *store) detect() {
 func (s *store) detectingAny() bool { return s.detecting || s.probingDDC }
 
 func (s *store) recordUsage() {
+	// Reuse this timer for permission changes rather than waking every
+	// second just to check them. Explicit requests poll briefly, too.
+	s.syncMediaKeys()
 	s.autoCheck()
 	s.tracker.Record(!s.monitor.Asleep(), time.Duration(display.IdleSeconds()*float64(time.Second)))
 	s.usage = s.tracker.Recent(7)

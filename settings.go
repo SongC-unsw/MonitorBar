@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -37,6 +38,7 @@ type settings struct {
 	// The language chosen in the panel, "" to follow the system's.
 	Language string `json:"language,omitempty"`
 	path     string
+	saved    []byte // last successfully loaded or written settings
 }
 
 // dataDir is where MonitorBar keeps its files.
@@ -52,8 +54,10 @@ func loadSettings() *settings {
 	s := &settings{SoftBrightness: 100, DayStart: "07:00", NightStart: "19:00", DayScene: "day", NightScene: "night",
 		FollowMin: 10, FollowMax: 100, HUD: true,
 		path: filepath.Join(dataDir(), "settings.json")}
-	if data, err := os.ReadFile(s.path); err == nil {
-		_ = json.Unmarshal(data, s)
+	if data, err := os.ReadFile(s.path); err == nil && json.Unmarshal(data, s) == nil {
+		// Remember the pre-migration values so legacy scenes are written
+		// back with their stable ids on the next save.
+		s.saved, _ = json.MarshalIndent(s, "", "  ")
 	}
 	// Before 1.7 the scenes were kept by their Chinese names.
 	legacy := map[string]string{"日间": "day", "阅读": "reading", "观影": "movie", "夜间": "night"}
@@ -65,11 +69,15 @@ func loadSettings() *settings {
 	return s
 }
 
+// save skips unchanged settings, including dimming reapplied at launch,
+// after waking, or after a display change. Failed writes can be retried.
 func (s *settings) save() {
 	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
+	if err != nil || bytes.Equal(data, s.saved) {
 		return
 	}
 	_ = os.MkdirAll(filepath.Dir(s.path), 0o755)
-	_ = os.WriteFile(s.path, data, 0o644)
+	if os.WriteFile(s.path, data, 0o644) == nil {
+		s.saved = data
+	}
 }

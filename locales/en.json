@@ -120,7 +120,7 @@
   },
   "showHud": "Show the level as keys change it",
   "mediaKeys": "Use the keyboard's brightness and volume keys",
-  "mediaKeysNote": "Advanced: F1/F2 without fn set the external brightness, and F10/F11/F12 mute it and set its volume while the sound plays on it. Needs the Accessibility permission.",
+  "mediaKeysNote": "Advanced: F1/F2 without fn set the external brightness while the pointer is on an external screen; the built-in screen keeps its own keys. F10/F11/F12 control display audio. Shift + Option adjusts by 1 point instead of 5. Needs the Accessibility permission.",
   "mediaKeysDenied": "No Accessibility permission. Turn MonitorBar on in the list; if it's on and still doesn't work after an update, remove it with − and add it again.",
   "mediaKeysSettings": "Open Accessibility Settings",
   "follow": "Follow the Built-in Display",

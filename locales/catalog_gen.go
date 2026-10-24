@@ -757,11 +757,11 @@ func (msgs Messages) MediaKeys() string {
 	return Catalog.Format(msgs.locale, "mediaKeys", nil)
 }
 
-// MediaKeysNote says "Advanced: F1/F2 without fn set the external brightness, and F10/F11/F12 mute it and set its volume while the sound pl…"
+// MediaKeysNote says "Advanced: F1/F2 without fn set the external brightness while the pointer is on an external screen; the built-in scree…"
 // in the language the app shows.
 func MediaKeysNote() string { return In(i18n.Locale()).MediaKeysNote() }
 
-// MediaKeysNote says "Advanced: F1/F2 without fn set the external brightness, and F10/F11/F12 mute it and set its volume while the sound pl…"
+// MediaKeysNote says "Advanced: F1/F2 without fn set the external brightness while the pointer is on an external screen; the built-in scree…"
 // in the language of msgs.
 func (msgs Messages) MediaKeysNote() string {
 	return Catalog.Format(msgs.locale, "mediaKeysNote", nil)
