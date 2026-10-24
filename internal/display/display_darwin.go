@@ -250,7 +250,10 @@ func (m Monitor) Apply(mode Mode) error {
 	return nil
 }
 
-var gammaBase [3][]float32 // the ColorSync curve, captured before the first change
+var (
+	gammaBase [3][]float32 // the ColorSync curve, captured before the first change
+	gammaSet  bool         // a table of the app's is on the display
+)
 
 // SetGamma dims and warms the picture through the gamma table. macOS resets
 // it when the app quits.
@@ -282,13 +285,20 @@ func (m Monitor) SetGamma(brightness, warmth float64) error {
 	if cgSetDisplayTransferByTable(m.handle, uint32(len(scaled[0])), &scaled[0][0], &scaled[1][0], &scaled[2][0]) != 0 {
 		return errors.New("display: the gamma table was refused")
 	}
+	gammaSet = true
 	return nil
 }
 
-// RestoreGamma puts the ColorSync curves back.
+// RestoreGamma puts the ColorSync curves back only if the app changed
+// them. macOS restores them on exit itself, so a neutral launch, wake, or
+// display change doesn't need to reload every display's color profile.
 func RestoreGamma() {
+	if !gammaSet {
+		return
+	}
 	load()
 	cgDisplayRestoreColorSyncSettings()
+	gammaSet = false
 }
 
 // ResetGammaBase forgets the captured curve, after the displays changed.

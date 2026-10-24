@@ -82,8 +82,12 @@ func (a *app) ready(show bool) {
 			})
 		}
 	}()
+	// Keep samples in memory between writes, but don't lose them to sleep
+	// or a normal exit.
+	mygo.Power.OnSuspend(a.s.tracker.Flush)
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 		a.s.save()
+		a.s.tracker.Flush()
 		display.RestoreGamma()
 		if a.s.ddc != nil {
 			a.s.ddc.Close()
@@ -96,20 +100,6 @@ func (a *app) ready(show bool) {
 	a.s.syncMediaKeys()
 	a.s.detect()
 	a.s.autoCheck()
-	go func() { // the built-in display's brightness, for following it, and the media keys' permission
-		for range time.Tick(time.Second) {
-			mygo.RunOnMain(func() {
-				denied := a.s.mediaKeysDenied
-				if a.s.syncMediaKeys(); denied != a.s.mediaKeysDenied {
-					a.s.redraw()
-				}
-				if a.s.prefs.FollowBuiltin && a.s.canFollow() {
-					a.s.followTick(display.BuiltinBrightness)
-					a.s.redraw()
-				}
-			})
-		}
-	}()
 	go func() { // a newer version: soon after launch, then every few hours
 		time.Sleep(10 * time.Second)
 		for {

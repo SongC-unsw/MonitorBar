@@ -36,13 +36,14 @@ MonitorBar 只在 REDMI 显示器 G Pro 27U 2026 上测试过，不保证在你�
 - **软件调光与色温**通过显卡的 Gamma 表实现，任何连接线、任何显示器都能用。
 - **组合亮度**（支持 DDC/CI 的显示器）：一个滑块管到底，50% 以上调硬件背光，50% 以下背光停在最低、改用软件调光继续压暗，比显示器自身的最低亮度更暗。
 - **快捷键**：默认 ⌃⌥↑ / ⌃⌥↓ 调亮度、⌃⌥⇧↑ / ⌃⌥⇧↓ 调音量（Windows 上是 Ctrl+Alt），在「画面」页点一下就能录制新的组合键，或按 Delete 清除；F1–F12 可以单独作为快捷键。显示器的每个输入源也可以录制一个快捷键（默认未设置），按下即切换。「静音 / 取消静音」同样可以录制（比如 F10），再按一次恢复静音前的音量。
-- **接管键盘亮度、音量键**（macOS，高级选项）：打开后不按 fn，直接用键盘上的亮度键调外接显示器；声音输出到显示器时，音量键调它的音量。需要在「隐私与安全性 → 辅助功能」中允许 MonitorBar；MacBook 内屏的亮度键照常生效，开启「跟随内屏亮度」时亮度键交给跟随功能。
+- **接管键盘亮度、音量键**（macOS，高级选项）：打开后不按 fn，指针在外接屏上时用亮度键调外接显示器，指针在 MacBook 内屏上时交给 macOS；声音输出到显示器时，音量键调它的音量。按住 Shift + Option 可按 1% 微调（通常为 5%），其他修饰键组合仍交给系统。需要在「隐私与安全性 → 辅助功能」中允许 MonitorBar；开启「跟随内屏亮度」时亮度键仍交给跟随功能。
 - **跟随内屏亮度**（MacBook + 支持 DDC/CI 的外接显示器）：内屏开启 macOS 自动亮度时，外接显示器的背光随之平滑调节，可设定外接亮度范围；手动调整会保留到内屏亮度下次变化。
 - **自动切换**：在「画面」里打开后，到了设定的白天、夜晚开始时间就自动切换到对应场景（默认 07:00「日间」、19:00「夜间」，场景可选）。只在时段交替时切换，中途的手动调整会保留到下一次交替。
 - **自动更新**：定期检查 GitHub 上的新版本，在面板底部提示，一键下载并重启；更新包经签名校验，只下载变化的部分。
 - 显示器不支持的功能不会出现在界面上。
 - **多语言**：简体中文和英文，跟随系统语言，也可在「⋯ → 语言」中切换。文案在 `locales/` 下（`en.json` 为源语言），改动后运行 `go tool mygo generate` 重新生成 `catalog_gen.go`。
-- 单个可执行文件，无 webview，空闲时不占 CPU；中文界面，深色主题。
+- **低空闲开销**：只有「跟随内屏亮度」开启且可用时才每秒采样；屏幕时间每 5 分钟写入一次，睡眠和退出前补写；设置不变时不重复写盘，未调光时不重载色彩配置。辅助功能权限复用现有的 30 秒采样定时器检查，请求授权后会短暂加快检查。
+- 单个可执行文件，无 webview；深色主题。
 
 ### 普通显示器也能用
 
@@ -125,7 +126,7 @@ git tag v1.0.0 && git push origin v1.0.0
 | `panel.go` / `tabs.go` / `widgets.go` / `icons.go` | 界面 |
 | `internal/mitv` | 澎湃 OS 局域网接口与发现 |
 | `internal/display` | 平台层：显示器信息、分辨率、Gamma、DDC/CI、亮屏与空闲时间 |
-| `internal/usage` | 屏幕时间，每 30 秒采样，保留 60 天 |
+| `internal/usage` | 屏幕时间，每 30 秒采样，每 5 分钟及睡眠 / 退出前写入，保留 60 天 |
 | `internal/schedule` | 自动切换：按设定时间判断白天或夜晚 |
 
 ## 适配其他显示器
@@ -145,6 +146,8 @@ git tag v1.0.0 && git push origin v1.0.0
 ## English
 
 REDMI monitors do not support DDC/CI, so the usual tools (MonitorControl, BetterDisplay, Lunar) cannot switch their inputs. They run HyperOS, though, whose LAN remote API can, DP and USB-C included. MonitorBar manages an external monitor from the macOS menu bar or the Windows notification area. It switches inputs and changes volume over the LAN remote API of Xiaomi HyperOS monitors, or over DDC/CI on monitors that support it (backlight and picture controls too), dims and warms the picture through the gamma table, switches resolutions and refresh rates, and tracks screen time. Monitors with neither HyperOS nor DDC/CI work too, with fewer features: dimming, color temperature, scenes, resolutions and screen time still work, while input switching, volume and hardware backlight do not. It is one Go codebase built with [mygo](https://mygo.egoist.dev/), drawing native UI on both platforms; the Windows build cross-compiles from a Mac. See [Development](#开发) for build commands.
+
+On macOS, optional media-key control routes brightness keys to the external display while the pointer is on an external screen, or leaves them to macOS on the built-in screen. Shift + Option adjusts brightness or volume in 1-point steps instead of 5; other modifier combinations stay with macOS. Built-in brightness following keeps its existing behavior. Idle work is reduced by sampling built-in brightness only when following is enabled and available, batching screen-time writes every five minutes (also flushing before sleep and exit), and skipping unchanged settings writes and unnecessary color-profile restores.
 
 ## 许可证
 

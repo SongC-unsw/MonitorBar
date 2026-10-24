@@ -18,6 +18,10 @@ const activeWithin = 2 * time.Minute
 
 const keepDays = 60
 
+// Persist five minutes of samples at a time, rather than rewriting a file
+// for Spotlight to index every 30 seconds. Flush saves the rest.
+const saveEvery = 10
+
 type Day struct {
 	Day    string `json:"day"`    // 2006-01-02
 	Awake  int    `json:"awake"`  // seconds lit
@@ -26,9 +30,10 @@ type Day struct {
 
 // Tracker samples the monitor and stores totals in a JSON file.
 type Tracker struct {
-	path string
-	days map[string]Day
-	now  func() time.Time
+	path    string
+	days    map[string]Day
+	now     func() time.Time
+	unsaved int // samples since the last successful write
 }
 
 func Open(path string) *Tracker {
@@ -60,7 +65,17 @@ func (t *Tracker) Record(awake bool, idle time.Duration) {
 	for _, old := range keys[:max(0, len(keys)-keepDays)] {
 		delete(t.days, old)
 	}
-	t.save()
+	if t.unsaved++; t.unsaved >= saveEvery {
+		t.Flush()
+	}
+}
+
+// Flush persists pending samples before sleep or exit. Leave them pending
+// if the write fails, so the next sample or Flush tries again.
+func (t *Tracker) Flush() {
+	if t.unsaved > 0 && t.save() {
+		t.unsaved = 0
+	}
 }
 
 // Recent returns the last n days, oldest first, with empty days included.
@@ -75,11 +90,13 @@ func (t *Tracker) Recent(n int) []Day {
 	return out
 }
 
-func (t *Tracker) save() {
+func (t *Tracker) save() bool {
 	data, err := json.Marshal(t.days)
 	if err != nil {
-		return
+		return false
 	}
-	_ = os.MkdirAll(filepath.Dir(t.path), 0o755)
-	_ = os.WriteFile(t.path, data, 0o644)
+	if err := os.MkdirAll(filepath.Dir(t.path), 0o755); err != nil {
+		return false
+	}
+	return os.WriteFile(t.path, data, 0o644) == nil
 }

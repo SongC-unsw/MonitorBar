@@ -45,9 +45,10 @@ func testPanel(t *testing.T) (*panel, *[2]float64) {
 		link:     mitv.New("192.0.2.1"),
 		inputs:   []mitv.Source{{ID: 23, Name: "HDMI1"}, {ID: 24, Name: "HDMI2"}, {ID: 29, Name: "DP"}, {ID: 30, Name: "USB-C"}},
 		volume:   80, hasVolume: true, deviceVolume: 80,
-		soundToDisplay: func() bool { return true },
-		onAdjust:       func(hudKind) {},
-		now:            func() time.Time { return time.Date(2026, 10, 15, 12, 0, 0, 0, time.Local) },
+		soundToDisplay:   func() bool { return true },
+		pointerOnBuiltin: func() bool { return false },
+		onAdjust:         func(hudKind) {},
+		now:              func() time.Time { return time.Date(2026, 10, 15, 12, 0, 0, 0, time.Local) },
 	}
 	s.prefs.DayScene, s.prefs.NightScene = "day", "night"
 	s.dayStart, s.nightStart = parseClock("07:00", 0), parseClock("19:00", 0)
@@ -488,44 +489,48 @@ func TestRecordShortcut(t *testing.T) {
 	}
 }
 
-// The media keys step the external display; macOS keeps the keys where the
-// display can't take them, and a MacBook's own display shares the
-// brightness keys.
+// The pointer routes brightness keys to the external or built-in display,
+// never both. Following still leaves them to macOS to avoid stepping twice.
 func TestMediaKey(t *testing.T) {
 	p, _ := testPanel(t)
 	s := p.s
 	s.link = nil // DDC/CI
 	s.hasBrightness, s.brightness = true, 50
 
-	step, pass := s.mediaKey(mediakeys.BrightnessUp)
-	if step == nil || pass {
-		t.Fatalf("brightness up: step %v, pass %v", step != nil, pass)
+	step := s.mediaKey(mediakeys.BrightnessUp, false)
+	if step == nil {
+		t.Fatal("brightness up left to macOS on an external display")
 	}
 	before := s.combinedBrightness()
 	step()
 	if got := s.combinedBrightness(); got != before+shortcutStep {
 		t.Errorf("brightness %v after up from %v", got, before)
 	}
-	if step, _ := s.mediaKey(mediakeys.VolumeDown); step == nil {
+	if step := s.mediaKey(mediakeys.VolumeDown, false); step == nil {
 		t.Fatal("volume down left to macOS with the sound on the display")
 	} else if step(); s.volume != 75 {
 		t.Errorf("volume %v after down from 80", s.volume)
 	}
 
 	s.hasBuiltin = true
-	if _, pass := s.mediaKey(mediakeys.BrightnessDown); !pass {
-		t.Error("the built-in display lost its brightness keys")
+	if s.mediaKey(mediakeys.BrightnessDown, false) == nil {
+		t.Error("an external display lost its keys just because a built-in one exists")
 	}
+	s.pointerOnBuiltin = func() bool { return true }
+	if s.mediaKey(mediakeys.BrightnessDown, false) != nil {
+		t.Error("a key for the built-in display stepped the external display")
+	}
+	s.pointerOnBuiltin = func() bool { return false }
 	s.prefs.FollowBuiltin = true
-	if step, _ := s.mediaKey(mediakeys.BrightnessDown); step != nil {
+	if s.mediaKey(mediakeys.BrightnessDown, false) != nil {
 		t.Error("a key stepped the backlight that follows the built-in display")
 	}
 	s.prefs.FollowBuiltin, s.monitor.Builtin = false, true
-	if step, _ := s.mediaKey(mediakeys.BrightnessUp); step != nil {
+	if s.mediaKey(mediakeys.BrightnessUp, false) != nil {
 		t.Error("a key stepped the built-in display, with no external one")
 	}
 	s.soundToDisplay = func() bool { return false }
-	if step, _ := s.mediaKey(mediakeys.VolumeUp); step != nil {
+	if s.mediaKey(mediakeys.VolumeUp, false) != nil {
 		t.Error("a key took the volume of sound playing elsewhere")
 	}
 }
@@ -539,7 +544,7 @@ func TestHUD(t *testing.T) {
 	var shown []hudKind
 	s.onAdjust = func(k hudKind) { shown = append(shown, k) }
 
-	step, _ := s.mediaKey(mediakeys.VolumeUp)
+	step := s.mediaKey(mediakeys.VolumeUp, false)
 	step()
 	if len(shown) != 0 {
 		t.Fatalf("HUD shown while turned off: %v", shown)
@@ -590,7 +595,7 @@ func TestMute(t *testing.T) {
 	if s.volume != 0 || !tt.HasText("0") {
 		t.Fatalf("volume %v after muting from 80", s.volume)
 	}
-	mute, _ := s.mediaKey(mediakeys.Mute)
+	mute := s.mediaKey(mediakeys.Mute, false)
 	if mute == nil {
 		t.Fatal("the mute key left to macOS with the sound on the display")
 	}

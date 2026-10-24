@@ -35,6 +35,7 @@ var (
 	cgEventTapCreate              func(tap, place, options uint32, mask uint64, callback, info uintptr) uintptr
 	cgEventTapEnable              func(tap uintptr, enable bool)
 	cgEventGetIntegerValueField   func(event uintptr, field uint32) int64
+	cgEventGetFlags               func(event uintptr) uint64
 	cfMachPortCreateRunLoopSource func(alloc, port uintptr, order int) uintptr
 	cfMachPortInvalidate          func(port uintptr)
 	cfRunLoopGetMain              func() uintptr
@@ -50,7 +51,7 @@ var (
 
 	// The tap while running, on the main thread.
 	tap, source uintptr
-	handler     Handler
+	pressed     keys
 )
 
 func load() {
@@ -70,7 +71,7 @@ func load() {
 		purego.RegisterLibFunc(&axIsProcessTrustedWithOptions, ax, "AXIsProcessTrustedWithOptions")
 		for fn, name := range map[any]string{
 			&cgEventTapCreate: "CGEventTapCreate", &cgEventTapEnable: "CGEventTapEnable",
-			&cgEventGetIntegerValueField: "CGEventGetIntegerValueField",
+			&cgEventGetIntegerValueField: "CGEventGetIntegerValueField", &cgEventGetFlags: "CGEventGetFlags",
 		} {
 			purego.RegisterLibFunc(fn, cg, name)
 		}
@@ -121,7 +122,7 @@ func Running() bool { return tap != 0 }
 // Start takes the keys for h, on the main thread.
 func Start(h Handler) error {
 	load()
-	handler = h
+	pressed.handle = h
 	if tap != 0 {
 		return nil
 	}
@@ -130,6 +131,7 @@ func Start(h Handler) error {
 	if t == 0 {
 		return ErrNotTrusted
 	}
+	pressed = keys{handle: h}
 	tap, source = t, cfMachPortCreateRunLoopSource(0, t, 0)
 	cfRunLoopAddSource(cfRunLoopGetMain(), source, commonModes)
 	cgEventTapEnable(tap, true)
@@ -141,11 +143,13 @@ func Stop() {
 	if tap == 0 {
 		return
 	}
+	cgEventTapEnable(tap, false)
 	cfRunLoopRemoveSource(cfRunLoopGetMain(), source, commonModes)
 	cfMachPortInvalidate(tap)
 	cfRelease(source)
 	cfRelease(tap)
 	tap, source = 0, 0
+	pressed = keys{}
 }
 
 // tapped is the event tap's callback: it returns the event to let it
@@ -199,7 +203,7 @@ func tapped(proxy uintptr, kind uint32, event, info uintptr) uintptr {
 }
 
 func take(event uintptr, k Key, down bool) uintptr {
-	if handler != nil && handler(k, down) {
+	if pressed.take(k, down, cgEventGetFlags(event)) {
 		return 0
 	}
 	return event
